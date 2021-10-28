@@ -1,0 +1,91 @@
+From e16f31207554ab78ce42a9cd3382eb37d93cb269 Mon Sep 17 00:00:00 2001
+From: Shubham Kulkarni <shubham.kulkarni@espressif.com>
+Date: Mon, 30 Aug 2021 17:14:49 +0530
+Subject: [PATCH] module: mcuboot: Add config option to support unsigned binary
+ generation
+
+This commit adds a change to support running west sign command even if
+the keyfile is not provided. Default value of the configuration
+is set to n in order to maintain backward compatibility.
+
+Signed-off-by: Shubham Kulkarni <shubham.kulkarni@espressif.com>
+---
+ Kconfig.zephyr      |  8 ++++++++
+ cmake/mcuboot.cmake | 21 ++++++++++++++-------
+ 2 files changed, 22 insertions(+), 7 deletions(-)
+
+diff --git a/Kconfig.zephyr b/Kconfig.zephyr
+index 5372c0ba15..1913c3d2af 100644
+--- a/Kconfig.zephyr
++++ b/Kconfig.zephyr
+@@ -579,6 +579,7 @@ if BOOTLOADER_MCUBOOT
+ config MCUBOOT_SIGNATURE_KEY_FILE
+ 	string "Path to the mcuboot signing key file"
+ 	default ""
++	depends on !MCUBOOT_GENERATE_UNSIGNED_IMAGE
+ 	help
+ 	  The file contains a key pair whose public half is verified
+ 	  by your target's MCUboot image. The file is in PEM format.
+@@ -637,6 +638,13 @@ config MCUBOOT_EXTRA_IMGTOOL_ARGS
+ 	  you can use this option to pass extra options to imgtool.
+ 	  For example, you could set this to "--version 1.2".
+ 
++config MCUBOOT_GENERATE_UNSIGNED_IMAGE
++	bool "Generate unsigned binary image bootable with MCUboot"
++	help
++	  Enabling this configuration allows automatic unsigned binary image
++	  generation when MCUboot signing key is not provided,
++	  i.e., MCUBOOT_SIGNATURE_KEY_FILE is left empty.
++
+ config MCUBOOT_GENERATE_CONFIRMED_IMAGE
+ 	bool "Also generate a padded, confirmed image"
+ 	help
+diff --git a/cmake/mcuboot.cmake b/cmake/mcuboot.cmake
+index 29b8e02de9..4f9b9bcca2 100644
+--- a/cmake/mcuboot.cmake
++++ b/cmake/mcuboot.cmake
+@@ -20,11 +20,13 @@ function(zephyr_mcuboot_tasks)
+   set(keyfile "${CONFIG_MCUBOOT_SIGNATURE_KEY_FILE}")
+   set(keyfile_enc "${CONFIG_MCUBOOT_ENCRYPTION_KEY_FILE}")
+ 
+-  # Check for misconfiguration.
+-  if("${keyfile}" STREQUAL "")
+-    # No signature key file, no signed binaries. No error, though:
+-    # this is the documented behavior.
+-    return()
++  if(NOT "${CONFIG_MCUBOOT_GENERATE_UNSIGNED_IMAGE}")
++    # Check for misconfiguration.
++    if("${keyfile}" STREQUAL "")
++      # No signature key file, no signed binaries. No error, though:
++      # this is the documented behavior.
++      return()
++    endif()
+   endif()
+ 
+   if(NOT WEST)
+@@ -39,7 +41,7 @@ function(zephyr_mcuboot_tasks)
+         set(${file} "${WEST_TOPDIR}/${${file}}")
+       endif()
+ 
+-      if(NOT EXISTS "${${file}}")
++      if(NOT EXISTS "${${file}}" AND NOT "${CONFIG_MCUBOOT_GENERATE_UNSIGNED_IMAGE}")
+         message(FATAL_ERROR "west sign can't find file ${${file}} (Note: Relative paths are relative to the west workspace topdir \"${WEST_TOPDIR}\")")
+       elseif(NOT (CONFIG_BUILD_OUTPUT_BIN OR CONFIG_BUILD_OUTPUT_HEX))
+         message(FATAL_ERROR "Can't sign images for MCUboot: Neither CONFIG_BUILD_OUTPUT_BIN nor CONFIG_BUILD_OUTPUT_HEX is enabled, so there's nothing to sign.")
+@@ -84,7 +86,12 @@ function(zephyr_mcuboot_tasks)
+   else()
+     set(imgtool_extra)
+   endif()
+-  set(imgtool_args -- --key "${keyfile}" ${imgtool_extra})
++
++  if(NOT "${keyfile}" STREQUAL "")
++    set(imgtool_extra --key "${keyfile}" ${imgtool_extra})
++  endif()
++
++  set(imgtool_args -- ${imgtool_extra})
+ 
+   # Extensionless prefix of any output file.
+   set(output ${ZEPHYR_BINARY_DIR}/${KERNEL_NAME})
+-- 
+2.33.1
+

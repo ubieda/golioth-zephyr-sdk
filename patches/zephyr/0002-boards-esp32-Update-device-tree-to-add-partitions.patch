@@ -1,0 +1,56 @@
+From c015f3da4d428bf8e97ff32c9f6fec1d55f7f45a Mon Sep 17 00:00:00 2001
+From: Shubham Kulkarni <shubham.kulkarni@espressif.com>
+Date: Mon, 30 Aug 2021 17:22:23 +0530
+Subject: [PATCH] boards: esp32: Update device tree to add partitions
+
+Adds MCUboot, primary, secondary and scratch partitions
+
+Signed-off-by: Shubham Kulkarni <shubham.kulkarni@espressif.com>
+---
+ boards/xtensa/esp32/esp32.dts | 29 +++++++++++++++++++++++++++--
+ 1 file changed, 27 insertions(+), 2 deletions(-)
+
+diff --git a/boards/xtensa/esp32/esp32.dts b/boards/xtensa/esp32/esp32.dts
+index 9267acea1f..47aea371a1 100644
+--- a/boards/xtensa/esp32/esp32.dts
++++ b/boards/xtensa/esp32/esp32.dts
+@@ -127,9 +127,34 @@
+ 		#address-cells = <1>;
+ 		#size-cells = <1>;
+ 
+-		storage_partition: partition@9000 {
++		/* Reserve 60kB for the bootloader */
++		boot_partition: partition@1000 {
++			label = "mcuboot";
++			reg = <0x00001000 0x0000F000>;
++			read-only;
++		};
++
++		/* Reserve 1024kB for the application in slot 0 */
++		slot0_partition: partition@10000 {
++			label = "image-0";
++			reg = <0x00010000 0x00100000>;
++		};
++
++		/* Reserve 1024kB for the application in slot 1 */
++		slot1_partition: partition@110000 {
++			label = "image-1";
++			reg = <0x00110000 0x00100000>;
++		};
++
++		/* Reserve 256kB for the scratch partition */
++		scratch_partition: partition@210000 {
++			   label = "image-scratch";
++			   reg = <0x00210000 0x00040000>;
++		};
++
++		storage_partition: partition@250000 {
+ 			label = "storage";
+-			reg = <0x00009000 0x00006000>;
++			reg = <0x00250000 0x00006000>;
+ 		};
+ 	};
+ };
+-- 
+2.33.1
+

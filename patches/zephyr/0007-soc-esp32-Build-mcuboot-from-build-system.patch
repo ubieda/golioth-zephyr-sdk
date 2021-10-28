@@ -1,0 +1,320 @@
+From d0594b182ffe090e9bd0d63c672cb3a89f8e4093 Mon Sep 17 00:00:00 2001
+From: Shubham Kulkarni <shubham.kulkarni@espressif.com>
+Date: Mon, 30 Aug 2021 17:18:15 +0530
+Subject: [PATCH] soc: esp32: Build mcuboot from build system
+
+Adds support for building and configuring mcuboot asper partitions
+defined in esp32.dts
+This commit moves IDF bootloader building logic to soc CMakeLists
+because bootloader is more relevant to SoC rather than board
+
+Signed-off-by: Shubham Kulkarni <shubham.kulkarni@espressif.com>
+---
+ Kconfig.zephyr                      |   2 +-
+ boards/xtensa/esp32/CMakeLists.txt  |  64 -------------
+ boards/xtensa/esp32/esp32_defconfig |   2 +-
+ soc/xtensa/esp32/CMakeLists.txt     | 134 ++++++++++++++++++++++++++++
+ soc/xtensa/esp32/Kconfig.defconfig  |   3 +
+ soc/xtensa/esp32/Kconfig.soc        |  25 ++++++
+ soc/xtensa/esp32/mcuboot.defconfig  |   1 +
+ 7 files changed, 165 insertions(+), 66 deletions(-)
+ create mode 100644 soc/xtensa/esp32/mcuboot.defconfig
+
+diff --git a/Kconfig.zephyr b/Kconfig.zephyr
+index 1913c3d2af..db7da1c56a 100644
+--- a/Kconfig.zephyr
++++ b/Kconfig.zephyr
+@@ -660,7 +660,7 @@ endif # BOOTLOADER_MCUBOOT
+ 
+ config BOOTLOADER_ESP_IDF
+ 	bool "ESP-IDF bootloader support"
+-	depends on SOC_ESP32 || SOC_ESP32S2
++	depends on (SOC_ESP32 || SOC_ESP32S2) && !BOOTLOADER_MCUBOOT
+ 	help
+ 	  This option will trigger the compilation of the ESP-IDF bootloader
+ 	  inside the build folder.
+diff --git a/boards/xtensa/esp32/CMakeLists.txt b/boards/xtensa/esp32/CMakeLists.txt
+index 61c684c20a..9881313609 100644
+--- a/boards/xtensa/esp32/CMakeLists.txt
++++ b/boards/xtensa/esp32/CMakeLists.txt
+@@ -1,65 +1 @@
+ # SPDX-License-Identifier: Apache-2.0
+-
+-if(CONFIG_BOOTLOADER_ESP_IDF)
+-  include(ExternalProject)
+-
+-  ## we use hell-world project, but I think any can be used.
+-  set(espidf_components_dir   ${ESP_IDF_PATH}/components)
+-  set(espidf_prefix    ${CMAKE_BINARY_DIR}/esp-idf)
+-  set(espidf_build_dir ${espidf_prefix}/build)
+-
+-  ExternalProject_Add(
+-    EspIdfBootloader
+-    PREFIX ${espidf_prefix}
+-    SOURCE_DIR ${espidf_components_dir}/bootloader/subproject
+-    BINARY_DIR ${espidf_build_dir}/bootloader
+-    CONFIGURE_COMMAND
+-    ${CMAKE_COMMAND} -G${CMAKE_GENERATOR}
+-    -S ${espidf_components_dir}/bootloader/subproject
+-    -B ${espidf_build_dir}/bootloader -DSDKCONFIG=${espidf_build_dir}/sdkconfig
+-    -DIDF_PATH=${ESP_IDF_PATH} -DIDF_TARGET=${CONFIG_BOARD}
+-    -DPYTHON_DEPS_CHECKED=1
+-    -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+-    -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+-    -DCMAKE_ASM_COMPILER=${CMAKE_ASM_COMPILER}
+-    -DCMAKE_SYSTEM_NAME=${CMAKE_SYSTEM_NAME}
+-    -DPYTHON=${PYTHON_EXECUTABLE}
+-    BUILD_COMMAND
+-    ${CMAKE_COMMAND} --build .
+-    INSTALL_COMMAND ""      # This particular build system has no install command
+-    )
+-
+-  ExternalProject_Add(
+-    EspPartitionTable
+-    SOURCE_DIR ${espidf_components_dir}/partition_table
+-    BINARY_DIR ${espidf_build_dir}
+-    CONFIGURE_COMMAND ""
+-    BUILD_COMMAND
+-    ${PYTHON_EXECUTABLE} ${ESP_IDF_PATH}/components/partition_table/gen_esp32part.py -q
+-    --offset 0x8000 --flash-size 4MB ${ESP_IDF_PATH}/components/partition_table/partitions_singleapp.csv ${espidf_build_dir}/partitions_singleapp.bin
+-    INSTALL_COMMAND ""
+-    )
+-
+-  if(CONFIG_BUILD_OUTPUT_BIN)
+-    set_property(GLOBAL APPEND PROPERTY extra_post_build_commands
+-      COMMAND ${PYTHON_EXECUTABLE} ${ESP_IDF_PATH}/components/esptool_py/esptool/esptool.py
+-      ARGS --chip esp32 elf2image --flash_mode dio --flash_freq 40m
+-      -o ${CMAKE_BINARY_DIR}/zephyr/${CONFIG_KERNEL_BIN_NAME}.bin
+-      ${CMAKE_BINARY_DIR}/zephyr/${CONFIG_KERNEL_BIN_NAME}.elf)
+-  endif()
+-
+-  set_property(TARGET bintools PROPERTY disassembly_flag_inline_source)
+-
+-  add_dependencies(app EspIdfBootloader EspPartitionTable)
+-
+-  board_finalize_runner_args(esp32 "--esp-flash-bootloader=${espidf_build_dir}/bootloader/bootloader.bin")
+-
+-  board_finalize_runner_args(esp32 "--esp-flash-partition_table=${espidf_build_dir}/partitions_singleapp.bin")
+-
+-  board_finalize_runner_args(esp32 "--esp-boot-address=0x1000")
+-
+-  board_finalize_runner_args(esp32 "--esp-partition-table-address=0x8000")
+-
+-  board_finalize_runner_args(esp32 "--esp-app-address=0x10000")
+-
+-endif()
+diff --git a/boards/xtensa/esp32/esp32_defconfig b/boards/xtensa/esp32/esp32_defconfig
+index c9dedd1818..1c9713df11 100644
+--- a/boards/xtensa/esp32/esp32_defconfig
++++ b/boards/xtensa/esp32/esp32_defconfig
+@@ -31,4 +31,4 @@ CONFIG_I2C_0=y
+ CONFIG_I2C_1=y
+ CONFIG_CLOCK_CONTROL=y
+ 
+-CONFIG_BOOTLOADER_ESP_IDF=y
++CONFIG_MCUBOOT_GENERATE_CONFIRMED_IMAGE=y
+diff --git a/soc/xtensa/esp32/CMakeLists.txt b/soc/xtensa/esp32/CMakeLists.txt
+index 9efc44acd5..8395b06e61 100644
+--- a/soc/xtensa/esp32/CMakeLists.txt
++++ b/soc/xtensa/esp32/CMakeLists.txt
+@@ -5,3 +5,137 @@ zephyr_sources(
+   esp32-mp.c
+   loader.c
+   )
++
++set_property(TARGET bintools PROPERTY disassembly_flag_inline_source)
++
++if(CONFIG_BOOTLOADER_ESP_IDF)
++  include(ExternalProject)
++
++  ## we use hell-world project, but I think any can be used.
++  set(espidf_components_dir ${ESP_IDF_PATH}/components)
++  set(espidf_prefix ${CMAKE_BINARY_DIR}/esp-idf)
++  set(espidf_build_dir ${espidf_prefix}/build)
++
++  ExternalProject_Add(
++    EspIdfBootloader
++    PREFIX ${espidf_prefix}
++    SOURCE_DIR ${espidf_components_dir}/bootloader/subproject
++    BINARY_DIR ${espidf_build_dir}/bootloader
++    CONFIGURE_COMMAND
++    ${CMAKE_COMMAND} -G${CMAKE_GENERATOR}
++    -S ${espidf_components_dir}/bootloader/subproject
++    -B ${espidf_build_dir}/bootloader -DSDKCONFIG=${espidf_build_dir}/sdkconfig
++    -DIDF_PATH=${ESP_IDF_PATH} -DIDF_TARGET=${CONFIG_BOARD}
++    -DPYTHON_DEPS_CHECKED=1
++    -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
++    -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
++    -DCMAKE_ASM_COMPILER=${CMAKE_ASM_COMPILER}
++    -DCMAKE_SYSTEM_NAME=${CMAKE_SYSTEM_NAME}
++    BUILD_COMMAND
++    ${CMAKE_COMMAND} --build .
++    INSTALL_COMMAND ""      # This particular build system has no install command
++    )
++
++  ExternalProject_Add(
++    EspPartitionTable
++    SOURCE_DIR ${espidf_components_dir}/partition_table
++    BINARY_DIR ${espidf_build_dir}
++    CONFIGURE_COMMAND ""
++    BUILD_COMMAND
++    python ${ESP_IDF_PATH}/components/partition_table/gen_esp32part.py -q
++    --offset 0x8000 --flash-size 4MB ${ESP_IDF_PATH}/components/partition_table/partitions_singleapp.csv ${espidf_build_dir}/partitions_singleapp.bin
++    INSTALL_COMMAND ""
++    )
++
++  if(CONFIG_BUILD_OUTPUT_BIN)
++    set_property(GLOBAL APPEND PROPERTY extra_post_build_commands
++      COMMAND python ${ESP_IDF_PATH}/components/esptool_py/esptool/esptool.py
++      ARGS --chip esp32 elf2image --flash_mode dio --flash_freq 40m
++      -o ${CMAKE_BINARY_DIR}/zephyr/${CONFIG_KERNEL_BIN_NAME}.bin
++      ${CMAKE_BINARY_DIR}/zephyr/${CONFIG_KERNEL_BIN_NAME}.elf)
++  endif()
++
++  add_dependencies(app EspIdfBootloader EspPartitionTable)
++
++  board_finalize_runner_args(esp32 "--esp-flash-bootloader=${espidf_build_dir}/bootloader/bootloader.bin")
++
++  board_finalize_runner_args(esp32 "--esp-flash-partition_table=${espidf_build_dir}/partitions_singleapp.bin")
++
++  board_finalize_runner_args(esp32 "--esp-boot-address=0x1000")
++
++  board_finalize_runner_args(esp32 "--esp-partition-table-address=0x8000")
++
++  board_finalize_runner_args(esp32 "--esp-app-address=0x10000")
++endif()
++
++if(CONFIG_BOOTLOADER_MCUBOOT)
++  include(ExternalProject)
++  set(mcuboot_dir ${ZEPHYR_BASE}/../bootloader/mcuboot)
++  set(mcuboot_esp_dir ${mcuboot_dir}/boot/espressif)
++  set(mcuboot_build_dir ${CMAKE_BINARY_DIR}/mcuboot)
++
++  file(COPY ${CMAKE_CURRENT_LIST_DIR}/mcuboot.defconfig DESTINATION ${mcuboot_build_dir})
++
++  dt_nodelabel(dts_partition_path NODELABEL "boot_partition")
++  dt_reg_size(mcub_size PATH ${dts_partition_path})
++  file(APPEND ${mcuboot_build_dir}/mcuboot.defconfig
++    "CONFIG_ESP_BOOTLOADER_SIZE=${mcub_size}\n")
++
++  dt_nodelabel(dts_partition_path NODELABEL "slot0_partition")
++  dt_reg_addr(img_0_off PATH ${dts_partition_path})
++  dt_reg_size(img_size PATH ${dts_partition_path})
++  file(APPEND ${mcuboot_build_dir}/mcuboot.defconfig
++    "CONFIG_ESP_APPLICATION_PRIMARY_START_ADDRESS=${img_0_off}\n"
++    "CONFIG_ESP_APPLICATION_SIZE=${img_size}\n")
++
++  dt_nodelabel(dts_partition_path NODELABEL "slot1_partition")
++  dt_reg_addr(img_1_off PATH ${dts_partition_path})
++  file(APPEND ${mcuboot_build_dir}/mcuboot.defconfig
++    "CONFIG_ESP_APPLICATION_SECONDARY_START_ADDRESS=${img_1_off}\n"
++  )
++
++  dt_nodelabel(dts_partition_path NODELABEL "scratch_partition")
++  dt_reg_addr(img_scr_off PATH ${dts_partition_path})
++  dt_reg_size(img_scr_size PATH ${dts_partition_path})
++  file(APPEND ${mcuboot_build_dir}/mcuboot.defconfig
++    "CONFIG_ESP_SCRATCH_OFFSET=${img_scr_off}\n"
++    "CONFIG_ESP_SCRATCH_SIZE=${img_scr_size}\n"
++  )
++
++  if(CONFIG_MCUBOOT_GENERATE_CONFIRMED_IMAGE)
++    set(app_bin ${CONFIG_KERNEL_BIN_NAME}.signed.confirmed.bin)
++  else()
++    set(app_bin ${CONFIG_KERNEL_BIN_NAME}.signed.bin)
++  endif()
++
++  board_finalize_runner_args(esp32
++    "--esp-flash-bootloader=${mcuboot_build_dir}/mcuboot_esp32.bin")
++  board_finalize_runner_args(esp32 "--esp-boot-address=0x1000")
++  board_finalize_runner_args(esp32 "--esp-app-address=${img_0_off}")
++  board_finalize_runner_args(esp32
++    "--esp-flash-app=${CMAKE_BINARY_DIR}/zephyr/${app_bin}")
++
++  add_custom_target(mcub_conf DEPENDS ${mcuboot_build_dir}/mcuboot.defconfig)
++
++  ExternalProject_Add(
++    McuBoot
++    SOURCE_DIR ${mcuboot_esp_dir}
++    BINARY_DIR ${mcuboot_build_dir}
++    CONFIGURE_COMMAND ""
++    BUILD_COMMAND
++    cmake -DCMAKE_TOOLCHAIN_FILE=${mcuboot_esp_dir}/tools/toolchain-esp32.cmake
++    -DMCUBOOT_TARGET=esp32 -DMCUBOOT_CONFIG_FILE=${mcuboot_build_dir}/mcuboot.defconfig
++    -DIDF_PATH=${ESP_IDF_PATH} -S ${mcuboot_esp_dir}
++    -GNinja &&
++    cmake --build . &&
++    ${python} ${ESP_IDF_PATH}/components/esptool_py/esptool/esptool.py
++    --chip esp32 elf2image --flash_mode dio --flash_freq 40m
++    --flash_size 4MB -o ${mcuboot_build_dir}/mcuboot_esp32.bin
++    ${mcuboot_build_dir}/mcuboot_esp32.elf
++    INSTALL_COMMAND ""
++    BUILD_ALWAYS 1
++    DEPENDS mcub_conf
++    )
++
++  add_dependencies(app McuBoot)
++endif()
+diff --git a/soc/xtensa/esp32/Kconfig.defconfig b/soc/xtensa/esp32/Kconfig.defconfig
+index 62e172f070..e1dc68c8c4 100644
+--- a/soc/xtensa/esp32/Kconfig.defconfig
++++ b/soc/xtensa/esp32/Kconfig.defconfig
+@@ -20,4 +20,7 @@ config MINIMAL_LIBC_OPTIMIZE_STRING_FOR_SIZE
+ config LOG_DETECT_MISSED_STRDUP
+ 	default n
+ 
++config ROM_START_OFFSET
++	default 0x20
++
+ endif
+diff --git a/soc/xtensa/esp32/Kconfig.soc b/soc/xtensa/esp32/Kconfig.soc
+index da0624350c..acb805ccc3 100644
+--- a/soc/xtensa/esp32/Kconfig.soc
++++ b/soc/xtensa/esp32/Kconfig.soc
+@@ -7,6 +7,10 @@ config SOC_ESP32
+ 	select CLOCK_CONTROL
+ 	select CLOCK_CONTROL_ESP32
+ 	select DYNAMIC_INTERRUPTS
++	select HAS_FLASH_LOAD_OFFSET
++	select BOOTLOADER_MCUBOOT
++	select MCUBOOT_GENERATE_UNSIGNED_IMAGE
++	select XIP
+ 
+ if SOC_ESP32
+ 
+@@ -246,4 +250,25 @@ config ESP32_UNIVERSAL_MAC_ADDRESSES
+ 	default 2 if ESP32_UNIVERSAL_MAC_ADDRESSES_TWO
+ 	default 4 if ESP32_UNIVERSAL_MAC_ADDRESSES_FOUR
+ 
++config ESP_BOOTLOADER_SIZE
++	hex
++
++config ESP_APPLICATION_PRIMARY_START_ADDRESS
++	hex
++
++config ESP_APPLICATION_SECONDARY_START_ADDRESS
++	hex
++
++config ESP_APPLICATION_SIZE
++	hex
++
++config ESP_SCRATCH_OFFSET
++	hex
++
++config ESP_SCRATCH_SIZE
++	hex
++
++config ESP_MCUBOOT_WDT_ENABLE
++	hex
++
+ endif # SOC_ESP32
+diff --git a/soc/xtensa/esp32/mcuboot.defconfig b/soc/xtensa/esp32/mcuboot.defconfig
+new file mode 100644
+index 0000000000..1ff98c7500
+--- /dev/null
++++ b/soc/xtensa/esp32/mcuboot.defconfig
+@@ -0,0 +1 @@
++CONFIG_ESP_MCUBOOT_WDT_ENABLE=y
+-- 
+2.33.1
+
